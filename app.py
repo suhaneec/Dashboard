@@ -13,6 +13,43 @@ import plotly.express as px
 
 st.set_page_config(page_title="Bathroom Renovation - Management Dashboard", layout="wide")
 
+st.markdown("""
+<style>
+html, body, [class*="css"] { font-size: 17px !important; }
+[data-testid="stMetricValue"] { font-size: 2.1rem !important; }
+[data-testid="stMetricLabel"] { font-size: 1.05rem !important; font-weight: 600 !important; }
+.stTabs [data-baseweb="tab"] { font-size: 1.15rem !important; font-weight: 600 !important; padding: 10px 18px !important; }
+h1 { font-size: 2.3rem !important; }
+h2 { font-size: 1.7rem !important; }
+h3 { font-size: 1.4rem !important; }
+p, li, .stMarkdown, label { font-size: 1.05rem !important; line-height: 1.55 !important; }
+[data-testid="stDataFrame"] { font-size: 1.02rem !important; }
+[data-testid="stCaptionContainer"] { font-size: 1rem !important; }
+</style>
+""", unsafe_allow_html=True)
+
+# ---------------------------------------------------------------------------
+# CHART THEME — vivid qualitative palette + larger fonts on every chart
+# ---------------------------------------------------------------------------
+COLOR_SEQ = ["#2E86AB", "#F26419", "#33A02C", "#8E44AD", "#F6AE2D", "#E63946",
+             "#118AB2", "#06D6A0", "#EF476F", "#FFB703", "#073B4C"]
+ACCENT = "#2E86AB"
+
+def style_fig(fig, height=420, showlegend=None):
+    fig.update_layout(
+        font=dict(size=15, family="Arial"),
+        title_font_size=19,
+        legend=dict(font=dict(size=13)),
+        height=height,
+        margin=dict(t=40, b=40, l=40, r=20),
+        plot_bgcolor="rgba(0,0,0,0)",
+    )
+    if showlegend is not None:
+        fig.update_layout(showlegend=showlegend)
+    fig.update_xaxes(title_font=dict(size=15), tickfont=dict(size=13))
+    fig.update_yaxes(title_font=dict(size=15), tickfont=dict(size=13))
+    return fig
+
 DATA_PATH = "cleaned_data.csv"
 
 # ---------------------------------------------------------------------------
@@ -186,15 +223,19 @@ with tab1:
             df["Booking Month"].dt.to_period("M").astype(str)
         ).size().reset_index(name="Bathrooms Booked")
         monthly.columns = ["Month", "Bathrooms Booked"]
-        fig = px.bar(monthly, x="Month", y="Bathrooms Booked")
-        st.plotly_chart(fig, width='stretch')
+        fig = px.bar(monthly, x="Month", y="Bathrooms Booked", color="Month",
+                     color_discrete_sequence=COLOR_SEQ, text="Bathrooms Booked")
+        fig.update_traces(textposition="outside")
+        st.plotly_chart(style_fig(fig, showlegend=False), width='stretch')
 
     with col_b:
         st.markdown("**Final Project Status Distribution**")
         status_counts = df["Final Project status"].value_counts().reset_index()
         status_counts.columns = ["Status", "Count"]
-        fig = px.bar(status_counts, x="Count", y="Status", orientation="h")
-        st.plotly_chart(fig, width='stretch')
+        fig = px.bar(status_counts, x="Count", y="Status", orientation="h", color="Status",
+                     color_discrete_sequence=COLOR_SEQ, text="Count")
+        fig.update_traces(textposition="outside")
+        st.plotly_chart(style_fig(fig, showlegend=False), width='stretch')
 
     st.info(
         "**Data quality note:** 51 of 256 multi-bathroom customers had an identical "
@@ -218,8 +259,8 @@ with tab2:
         "Stage": ["Booked", "Reached Design Payment (60%)", "Reached Final Payment (50%)", "Handover Completed"],
         "Bathrooms": [booked, reached_design_pay, reached_final_pay, handed_over]
     })
-    fig = px.funnel(funnel_df, x="Bathrooms", y="Stage")
-    st.plotly_chart(fig, width='stretch')
+    fig = px.funnel(funnel_df, x="Bathrooms", y="Stage", color="Stage", color_discrete_sequence=COLOR_SEQ)
+    st.plotly_chart(style_fig(fig, height=380, showlegend=False), width='stretch')
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Booking → Design Payment", f"{reached_design_pay/booked*100:.1f}%" if booked else "0%")
@@ -235,16 +276,20 @@ with tab2:
             ["Lost at Design", "Lost at Execution", "Cancelled at sales"])]
         lost_counts = lost["Final Project status"].value_counts().reset_index()
         lost_counts.columns = ["Reason Stage", "Count"]
-        fig = px.pie(lost_counts, names="Reason Stage", values="Count", hole=0.4)
-        st.plotly_chart(fig, width='stretch')
+        fig = px.pie(lost_counts, names="Reason Stage", values="Count", hole=0.4,
+                     color_discrete_sequence=COLOR_SEQ)
+        fig.update_traces(textinfo="label+percent", textfont_size=14)
+        st.plotly_chart(style_fig(fig), width='stretch')
 
     with col_b:
         st.markdown("**On-Hold Design Reasons**")
         holds = df["On hold Design Reasons"].dropna().value_counts().reset_index()
         holds.columns = ["Reason", "Count"]
         if len(holds):
-            fig = px.bar(holds, x="Count", y="Reason", orientation="h")
-            st.plotly_chart(fig, width='stretch')
+            fig = px.bar(holds, x="Count", y="Reason", orientation="h", color="Reason",
+                         color_discrete_sequence=COLOR_SEQ, text="Count")
+            fig.update_traces(textposition="outside")
+            st.plotly_chart(style_fig(fig, showlegend=False), width='stretch')
         else:
             st.caption("No on-hold reasons in current filter selection.")
 
@@ -286,8 +331,10 @@ with tab3:
     cust_month = df.dropna(subset=["Booking Month"]).groupby("Project Parent Code")["Booking Month"].min().dt.to_period("M").astype(str)
     rev_by_cust = customer_level_value(df, "Total revenue collected")
     trend = pd.DataFrame({"Month": cust_month, "Revenue": rev_by_cust}).dropna().groupby("Month")["Revenue"].sum().reset_index()
-    fig = px.line(trend, x="Month", y="Revenue", markers=True)
-    st.plotly_chart(fig, width='stretch')
+    fig = px.line(trend, x="Month", y="Revenue", markers=True,
+                  color_discrete_sequence=[ACCENT])
+    fig.update_traces(line=dict(width=3), marker=dict(size=9, color="#E63946"))
+    st.plotly_chart(style_fig(fig), width='stretch')
 
     col_a, col_b = st.columns(2)
     with col_a:
@@ -297,8 +344,10 @@ with tab3:
             q, r = smart_total(g, "Quotation value"), smart_total(g, "Total revenue collected")
             rows.append({"Zone": z, "Collection %": (r/q*100) if q else 0})
         zone_df = pd.DataFrame(rows).sort_values("Collection %", ascending=False)
-        fig = px.bar(zone_df, x="Zone", y="Collection %")
-        st.plotly_chart(fig, width='stretch')
+        fig = px.bar(zone_df, x="Zone", y="Collection %", color="Zone",
+                     color_discrete_sequence=COLOR_SEQ, text="Collection %")
+        fig.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+        st.plotly_chart(style_fig(fig, showlegend=False), width='stretch')
 
     with col_b:
         st.markdown("**Top 10 Localities by Revenue Collected**")
@@ -306,13 +355,15 @@ with tab3:
         for loc, g in df.groupby("Locality"):
             rows.append({"Locality": loc, "Revenue Collected": smart_total(g, "Total revenue collected")})
         loc_df = pd.DataFrame(rows).sort_values("Revenue Collected", ascending=False).head(10)
-        fig = px.bar(loc_df, x="Revenue Collected", y="Locality", orientation="h")
-        st.plotly_chart(fig, width='stretch')
+        fig = px.bar(loc_df, x="Revenue Collected", y="Locality", orientation="h", color="Locality",
+                     color_discrete_sequence=COLOR_SEQ)
+        st.plotly_chart(style_fig(fig, showlegend=False), width='stretch')
 
     st.markdown("**Pending Amount to Collect — Distribution**")
     pending_series = customer_level_value(df, "Pending Amount to collect\n (in lacs) without gst")
-    fig = px.histogram(pending_series, nbins=30, labels={"value": "Pending Amount (Lacs)"})
-    st.plotly_chart(fig, width='stretch')
+    fig = px.histogram(pending_series, nbins=30, labels={"value": "Pending Amount (Lacs)"},
+                        color_discrete_sequence=[ACCENT])
+    st.plotly_chart(style_fig(fig, showlegend=False), width='stretch')
 
 # ===========================================================================
 # TAB 4: TAT & AGING
@@ -325,15 +376,17 @@ with tab4:
         st.markdown("**Design Aging (from Booking)**")
         d = df["Design aging (Bracket) From Booking"].dropna().value_counts().reset_index()
         d.columns = ["Bracket", "Count"]
-        fig = px.pie(d, names="Bracket", values="Count", hole=0.4)
-        st.plotly_chart(fig, width='stretch')
+        fig = px.pie(d, names="Bracket", values="Count", hole=0.4, color_discrete_sequence=COLOR_SEQ)
+        fig.update_traces(textinfo="label+percent", textfont_size=14)
+        st.plotly_chart(style_fig(fig), width='stretch')
     with col_b:
         st.markdown("**PI Aging (from Booking)**")
         d = df["PI aging (Bracket) From Booking"].dropna().value_counts().reset_index()
         d.columns = ["Bracket", "Count"]
         if len(d):
-            fig = px.pie(d, names="Bracket", values="Count", hole=0.4)
-            st.plotly_chart(fig, width='stretch')
+            fig = px.pie(d, names="Bracket", values="Count", hole=0.4, color_discrete_sequence=COLOR_SEQ)
+            fig.update_traces(textinfo="label+percent", textfont_size=14)
+            st.plotly_chart(style_fig(fig), width='stretch')
         else:
             st.caption("No data in current filter selection.")
     with col_c:
@@ -341,8 +394,9 @@ with tab4:
         d = df["Execution aging (Bracket) From Design payment"].dropna().value_counts().reset_index()
         d.columns = ["Bracket", "Count"]
         if len(d):
-            fig = px.pie(d, names="Bracket", values="Count", hole=0.4)
-            st.plotly_chart(fig, width='stretch')
+            fig = px.pie(d, names="Bracket", values="Count", hole=0.4, color_discrete_sequence=COLOR_SEQ)
+            fig.update_traces(textinfo="label+percent", textfont_size=14)
+            st.plotly_chart(style_fig(fig), width='stretch')
         else:
             st.caption("No data in current filter selection.")
 
@@ -356,8 +410,9 @@ with tab4:
     st.markdown("**On-Hold Aging Distribution (days)**")
     hold_aging = df["On hold aging"].dropna()
     if len(hold_aging):
-        fig = px.histogram(hold_aging, nbins=30, labels={"value": "On-Hold Aging (days)"})
-        st.plotly_chart(fig, width='stretch')
+        fig = px.histogram(hold_aging, nbins=30, labels={"value": "On-Hold Aging (days)"},
+                            color_discrete_sequence=[ACCENT])
+        st.plotly_chart(style_fig(fig, showlegend=False), width='stretch')
     else:
         st.caption("No on-hold aging data in current filter selection.")
 
@@ -437,5 +492,7 @@ with tab6:
     loc_df = pd.DataFrame(rows).sort_values("Bathrooms", ascending=False)
     st.dataframe(loc_df, hide_index=True, width='stretch')
 
-    fig = px.bar(loc_df.head(11), x="Locality", y="Bathrooms")
-    st.plotly_chart(fig, width='stretch')
+    fig = px.bar(loc_df.head(11), x="Locality", y="Bathrooms", color="Locality",
+                 color_discrete_sequence=COLOR_SEQ, text="Bathrooms")
+    fig.update_traces(textposition="outside")
+    st.plotly_chart(style_fig(fig, showlegend=False), width='stretch')
