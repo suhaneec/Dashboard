@@ -49,6 +49,24 @@ p, li, .stMarkdown, label { font-size: 1.05rem !important; line-height: 1.55 !im
     font-size: 1.02rem;
     margin-bottom: 14px;
 }
+.flag-box {
+    background: #FFF1F0;
+    border-left: 5px solid #E63946;
+    border-radius: 8px;
+    padding: 14px 18px 10px 18px;
+    font-size: 1.02rem;
+    margin: 10px 0 16px 0;
+}
+.flag-box ul { margin: 6px 0 4px 20px; padding: 0; }
+.flag-box li { margin-bottom: 4px; }
+.flag-box-ok {
+    background: #EFFAF3;
+    border-left: 5px solid #33A02C;
+    border-radius: 8px;
+    padding: 12px 18px;
+    font-size: 1.0rem;
+    margin: 10px 0 16px 0;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -114,6 +132,60 @@ def safe_pct(numerator, denominator):
 
 def fmt_pct(x):
     return f"{x:.1f}%" if pd.notna(x) else "0.0%"
+
+
+def flag_box(issues, ok_msg="No significant issues detected in the current view."):
+    """Renders a red 'Key Issues' callout if `issues` (list of HTML strings) is
+    non-empty, otherwise a green all-clear box. Every issue is computed live
+    from the currently filtered data — nothing here is hardcoded text."""
+    if not issues:
+        st.markdown(f'<div class="flag-box-ok">✅ {ok_msg}</div>', unsafe_allow_html=True)
+        return
+    items = "".join(f"<li>{i}</li>" for i in issues)
+    st.markdown(
+        f'<div class="flag-box">🚩 <b>Key Issues Flagged</b><ul>{items}</ul></div>',
+        unsafe_allow_html=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# PROBLEM-DETECTION THRESHOLDS
+# These are business assumptions, not derived from the data — tune them to
+# BathExpertz's actual SLAs/targets when available. Documented here so every
+# flag on the dashboard is traceable to a rule, not a gut call.
+# ---------------------------------------------------------------------------
+LOST_CANCELLED_RATE_FLAG = 0.15     # flag portfolio if >15% of bathrooms are lost/cancelled
+COLLECTION_PCT_FLAG = 0.65          # flag if revenue collected < 65% of quotation value
+DESIGN_TAT_MONTHS_FLAG = 2.0        # flag if avg Booking->Design TAT exceeds this many months
+EXECUTION_TAT_MONTHS_FLAG = 3.0     # flag if avg Design->Execution TAT exceeds this many months
+DELAYED_SHARE_FLAG = 0.30           # flag a stage if >30% of its tracked bathrooms are 'Delayed'
+ZONE_COLLECTION_GAP_FLAG = 10       # flag a zone if its collection % trails portfolio avg by >10pp
+PENDING_TO_REVENUE_FLAG = 0.20      # flag if total pending AR exceeds 20% of total revenue collected
+TEAM_OUTLIER_SD = 1.0                # flag a rep/PM/designer >1 std dev worse than their peer group
+TEAM_MIN_GROUP_SIZE = 3              # don't flag outliers in groups smaller than this (not statistically meaningful)
+
+
+def sd_outliers(perf_df, metric_col, id_col, worse_is_lower, label, unit="%"):
+    """Flags rows more than TEAM_OUTLIER_SD standard deviations worse than the
+    peer-group mean on `metric_col`. Self-calibrating — no fixed threshold needed."""
+    perf_df = perf_df.dropna(subset=[metric_col])
+    if len(perf_df) < TEAM_MIN_GROUP_SIZE:
+        return []
+    mean = perf_df[metric_col].mean()
+    std = perf_df[metric_col].std()
+    if pd.isna(std) or std == 0:
+        return []
+    out = []
+    for _, r in perf_df.iterrows():
+        z = (r[metric_col] - mean) / std
+        is_bad = z < -TEAM_OUTLIER_SD if worse_is_lower else z > TEAM_OUTLIER_SD
+        if is_bad:
+            n_bath = r["Bathrooms"] if "Bathrooms" in r else r.get("Bathrooms Booked", "")
+            out.append(
+                f"<b>{r[id_col]}</b> — {label}: {r[metric_col]:.1f}{unit} vs. peer avg "
+                f"{mean:.1f}{unit} ({n_bath} bathrooms)."
+            )
+    return out
 
 
 DATA_PATH = "cleaned_data.csv"
@@ -344,6 +416,20 @@ with tab1:
         "dashboard use a customer-level de-duplication rule to avoid double-counting these."
     )
 
+    st.markdown("**🚩 Portfolio-Level Issues**")
+    issues = []
+    if n_bathrooms and lost_pct / 100 > LOST_CANCELLED_RATE_FLAG:
+        issues.append(
+            f"Lost/Cancelled rate is <b>{lost_pct:.1f}%</b> ({lost_ct:,} of {n_bathrooms:,} bathrooms) "
+            f"— above the {LOST_CANCELLED_RATE_FLAG*100:.0f}% watch level."
+        )
+    if total_quotation and (total_revenue / total_quotation) < COLLECTION_PCT_FLAG:
+        issues.append(
+            f"Collection efficiency is only <b>{collection_pct:.1f}%</b> of quotation value "
+            f"— below the {COLLECTION_PCT_FLAG*100:.0f}% target."
+        )
+    flag_box(issues)
+
 # ===========================================================================
 # TAB 2: FUNNEL & CONVERSION
 # ===========================================================================
@@ -411,6 +497,31 @@ with tab2:
                              use_container_width=True)
         else:
             st.caption("No on-hold reasons in current filter selection.")
+
+    st.markdown("**🚩 Funnel Issues**")
+    funnel_issues = []
+    gate_names = list(zip(funnel_df["Stage"][:-1], funnel_df["Stage"][1:]))
+    gate_vals = list(zip(funnel_df["Bathrooms"][:-1], funnel_df["Bathrooms"][1:]))
+    conversions = [
+        (a, b, safe_pct(cur, prev), prev - cur)
+        for (a, b), (prev, cur) in zip(gate_names, gate_vals) if prev
+    ]
+    if conversions:
+        worst = min(conversions, key=lambda x: x[2])
+        funnel_issues.append(
+            f"Biggest drop-off: <b>{worst[0]} → {worst[1]}</b> — only {worst[2]:.1f}% convert "
+            f"({worst[3]:,} bathrooms lost at this gate)."
+        )
+    if len(lost_counts):
+        lc_sorted = lost_counts.sort_values("Count", ascending=False)
+        top_reason = lc_sorted.iloc[0]
+        share = top_reason["Count"] / lc_sorted["Count"].sum()
+        if share > 0.5:
+            funnel_issues.append(
+                f"<b>{top_reason['Reason Stage']}</b> alone accounts for {share*100:.0f}% of all "
+                f"lost/cancelled bathrooms ({int(top_reason['Count']):,} of {int(lc_sorted['Count'].sum()):,})."
+            )
+    flag_box(funnel_issues)
 
     st.markdown("**Sales / Design / Execution Stage Breakdown**")
     c1, c2, c3 = st.columns(3)
@@ -501,6 +612,24 @@ with tab3:
     st.plotly_chart(style_fig(fig, showlegend=False, title="Customers by Pending Amount Outstanding (Lacs)"),
                      use_container_width=True)
 
+    st.markdown("**🚩 Revenue & Collections Issues**")
+    rev_issues = []
+    pending_rupees = total_pending * 1e5  # total_pending is in Lacs
+    if total_revenue and pending_rupees / total_revenue > PENDING_TO_REVENUE_FLAG:
+        rev_issues.append(
+            f"Pending AR (₹{total_pending:.1f} L) is <b>{pending_rupees/total_revenue*100:.0f}%</b> of "
+            f"total revenue collected — above the {PENDING_TO_REVENUE_FLAG*100:.0f}% watch level."
+        )
+    portfolio_collection_pct = safe_pct(total_revenue, total_quotation)
+    for _, r in zone_df.iterrows():
+        gap = portfolio_collection_pct - r["Collection %"]
+        if gap > ZONE_COLLECTION_GAP_FLAG:
+            rev_issues.append(
+                f"<b>{r['Zone']}</b> collection efficiency is {r['Collection %']:.1f}%, "
+                f"{gap:.0f}pp below the portfolio average ({portfolio_collection_pct:.1f}%)."
+            )
+    flag_box(rev_issues)
+
 # ===========================================================================
 # TAB 4: TAT & AGING
 # ===========================================================================
@@ -573,6 +702,35 @@ with tab4:
     else:
         st.caption("No on-hold aging data in current filter selection.")
 
+    st.markdown("**🚩 TAT & Aging Issues**")
+    tat_issues = []
+    if pd.notna(avg_design_months) and avg_design_months > DESIGN_TAT_MONTHS_FLAG:
+        tat_issues.append(
+            f"Avg Booking → Design TAT is <b>{avg_design_months:.1f} months</b> — above the "
+            f"{DESIGN_TAT_MONTHS_FLAG:.1f}-month watch level (based on {n_design_done:,} completed bathrooms)."
+        )
+    if pd.notna(avg_exec_months) and avg_exec_months > EXECUTION_TAT_MONTHS_FLAG:
+        tat_issues.append(
+            f"Avg Design → Execution TAT is <b>{avg_exec_months:.1f} months</b> — above the "
+            f"{EXECUTION_TAT_MONTHS_FLAG:.1f}-month watch level (based on {n_exec_done:,} completed bathrooms)."
+        )
+    for label, col in [
+        ("Design", "Design aging (Bracket) From Booking"),
+        ("PI", "PI aging (Bracket) From Booking"),
+        ("Execution", "Execution aging (Bracket) From Design payment"),
+    ]:
+        d = counts_table(df[col], "Bracket", "Count")
+        if len(d):
+            total_n = d["Count"].sum()
+            delayed_n = d.loc[d["Bracket"] == "Delayed", "Count"].sum()
+            share = delayed_n / total_n if total_n else 0
+            if share > DELAYED_SHARE_FLAG:
+                tat_issues.append(
+                    f"<b>{label} stage:</b> {share*100:.0f}% of currently-tracked bathrooms are "
+                    f"Delayed ({int(delayed_n):,} of {int(total_n):,})."
+                )
+    flag_box(tat_issues)
+
 # ===========================================================================
 # TAB 5: TEAM PERFORMANCE
 # ===========================================================================
@@ -633,6 +791,23 @@ with tab5:
                          use_container_width=True)
         st.dataframe(pm_df, hide_index=True, use_container_width=True)
 
+    st.markdown("---")
+    st.markdown("**🚩 Team Performance Issues**")
+    st.caption(
+        f"Flags an individual only if they sit more than {TEAM_OUTLIER_SD:.0f} standard deviation "
+        f"below/above their own peer group's average (min {TEAM_MIN_GROUP_SIZE} people in the group) "
+        "— self-calibrating to this team, not a fixed external benchmark."
+    )
+    team_issues = []
+    team_issues += sd_outliers(sales_df, "Handover Rate %", "Sales Team", worse_is_lower=True,
+                                label="handover rate")
+    team_issues += sd_outliers(sales_df, "Lost/Cancelled Rate %", "Sales Team", worse_is_lower=False,
+                                label="lost/cancelled rate")
+    team_issues += sd_outliers(designer_df, "Avg Design Aging (months)", "Designer", worse_is_lower=False,
+                                label="avg design TAT", unit=" months")
+    team_issues += sd_outliers(pm_df, "Handover Rate %", "PM", worse_is_lower=True, label="handover rate")
+    flag_box(team_issues)
+
 # ===========================================================================
 # TAB 6: GEOGRAPHIC — map view (replaces the old grid-table breakdown)
 # ===========================================================================
@@ -685,4 +860,27 @@ with tab6:
         **{"Quotation Value (Cr)": ("Quotation Value (Cr)", "sum")},
         **{"Revenue Collected (Cr)": ("Revenue Collected (Cr)", "sum")},
     ).reset_index().sort_values("Bathrooms", ascending=False)
+    zone_summary["Collection %"] = zone_summary.apply(
+        lambda r: safe_pct(r["Revenue Collected (Cr)"], r["Quotation Value (Cr)"]), axis=1
+    )
     st.dataframe(zone_summary, hide_index=True, use_container_width=True)
+
+    st.markdown("**🚩 Geographic Issues**")
+    geo_issues = []
+    portfolio_collection = safe_pct(zone_summary["Revenue Collected (Cr)"].sum(),
+                                     zone_summary["Quotation Value (Cr)"].sum())
+    for _, r in zone_summary.iterrows():
+        gap = portfolio_collection - r["Collection %"]
+        if gap > ZONE_COLLECTION_GAP_FLAG:
+            geo_issues.append(
+                f"<b>{r['Zone']}</b> is trailing on collections: {r['Collection %']:.1f}% vs. "
+                f"portfolio average {portfolio_collection:.1f}% ({gap:.0f}pp gap)."
+            )
+    low_volume = zone_summary[zone_summary["Bathrooms"] < zone_summary["Bathrooms"].mean() * 0.25]
+    if len(low_volume) and len(zone_summary) > 3:
+        names = ", ".join(f"<b>{z}</b>" for z in low_volume["Zone"])
+        geo_issues.append(
+            f"Low-volume zones with limited data (under 25% of the average zone's bookings): {names} — "
+            "treat their metrics as directional only, not statistically reliable yet."
+        )
+    flag_box(geo_issues)
