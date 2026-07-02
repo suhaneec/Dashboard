@@ -718,7 +718,14 @@ with tab3:
         # Show real month names (e.g. "Oct 2025") on the axis instead of the
         # raw "2025-10" period code.
         trend["Month"] = month_labels(trend["Month"])
-        trend["Label"] = trend["Revenue"].apply(lambda v: f"₹{v/1e7:.2f} Cr")
+        # Plot in ₹ Crore rather than raw rupees — raw rupees force Plotly's
+        # auto-formatter to print axis ticks like "200M"/"600M", which reads
+        # like an abstract unit rather than money. Dividing into Cr up front
+        # means the axis itself shows "1", "2", "5.7" etc. against a
+        # "Revenue Collected (₹ Cr)" title, matching how the KPI cards above
+        # already report revenue.
+        trend["Revenue (Cr)"] = trend["Revenue"] / 1e7
+        trend["Label"] = trend["Revenue (Cr)"].apply(lambda v: f"₹{v:.2f} Cr")
         if len(trend) == 1:
             # A line chart with exactly one point has no line to draw — it
             # renders as a single dot floating in an otherwise-empty axis box,
@@ -726,12 +733,12 @@ with tab3:
             # filter has narrowed the view to one month's cohort). A single
             # labeled bar reads cleanly in that case, so switch chart type
             # rather than forcing a line render that has nothing to connect.
-            fig = px.bar(trend, x="Month", y="Revenue", text="Label", color_discrete_sequence=[ACCENT])
+            fig = px.bar(trend, x="Month", y="Revenue (Cr)", text="Label", color_discrete_sequence=[ACCENT])
             fig.update_traces(marker_color=ACCENT, textposition="outside", textfont=dict(size=17))
             fig.update_xaxes(type="category", title="Month")
-            fig.update_yaxes(rangemode="tozero", title="Revenue Collected (₹)")
+            fig.update_yaxes(rangemode="tozero", title="Revenue Collected (₹ Cr)")
         else:
-            fig = px.line(trend, x="Month", y="Revenue", markers=True, text="Label",
+            fig = px.line(trend, x="Month", y="Revenue (Cr)", markers=True, text="Label",
                            color_discrete_sequence=[ACCENT])
             fig.update_traces(line=dict(width=3), marker=dict(size=9, color="#E63946"),
                                textposition="top center", textfont=dict(size=13))
@@ -741,7 +748,7 @@ with tab3:
             # (e.g. "570.993101M" vs "570.9931025M"). Forcing rangemode="tozero"
             # anchors the axis at 0 so the chart gets a sensible 0-to-max range.
             fig.update_xaxes(type="category", title="Month")
-            fig.update_yaxes(rangemode="tozero", title="Revenue Collected (₹)")
+            fig.update_yaxes(rangemode="tozero", title="Revenue Collected (₹ Cr)")
         st.plotly_chart(style_fig(fig, title="Revenue Collected, by Booking-Month Cohort"),
                          use_container_width=True)
 
@@ -766,13 +773,15 @@ with tab3:
         st.markdown("**Top 10 Localities by Revenue Collected**")
         rows = []
         for loc, g in df.groupby("Locality"):
-            rows.append({"Locality": loc, "Revenue Collected": smart_total(g, "Total revenue collected")})
+            rows.append({"Locality": loc, "Revenue Collected (Cr)": smart_total(g, "Total revenue collected") / 1e7})
         loc_df = rows_to_df(rows, "No locality data in current filter selection.")
         if loc_df is not None:
-            loc_df = loc_df.sort_values("Revenue Collected", ascending=False).head(10)
-            fig = px.bar(loc_df, x="Revenue Collected", y="Locality", orientation="h",
-                         color_discrete_sequence=[ACCENT])
-            fig.update_traces(marker_color=ACCENT)
+            loc_df = loc_df.sort_values("Revenue Collected (Cr)", ascending=False).head(10)
+            loc_df["Label"] = loc_df["Revenue Collected (Cr)"].apply(lambda v: f"₹{v:.2f} Cr")
+            fig = px.bar(loc_df, x="Revenue Collected (Cr)", y="Locality", orientation="h",
+                         text="Label", color_discrete_sequence=[ACCENT])
+            fig.update_traces(marker_color=ACCENT, textposition="outside", textfont=dict(size=13))
+            fig.update_xaxes(title="Revenue Collected (₹ Cr)")
             st.plotly_chart(style_fig(fig, showlegend=False, title="Top 10 Localities by Revenue Collected"),
                              use_container_width=True)
 
