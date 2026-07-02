@@ -148,7 +148,70 @@ def flag_box(issues, ok_msg="No significant issues detected in the current view.
     )
 
 
+def _rag_color(t):
+    """Interpolate a color along red -> yellow -> green for t in [0, 1].
+    Returns a CSS background-color (+ readable text color) string."""
+    t = 0.0 if pd.isna(t) else max(0.0, min(1.0, t))
+    if t < 0.5:
+        ratio = t / 0.5
+        r = int(230 + (246 - 230) * ratio)
+        g = int(57 + (174 - 57) * ratio)
+        b = int(70 + (45 - 70) * ratio)
+    else:
+        ratio = (t - 0.5) / 0.5
+        r = int(246 + (51 - 246) * ratio)
+        g = int(174 + (160 - 174) * ratio)
+        b = int(45 + (44 - 45) * ratio)
+    text_color = "white" if (r * 0.299 + g * 0.587 + b * 0.114) < 150 else "black"
+    return f"background-color: rgb({r},{g},{b}); color: {text_color};"
+
+
+def _rag_column(s, higher_is_better=True):
+    """Rank a single numeric column's values relative to each other (min-max
+    within the currently displayed rows) and return a CSS style per cell —
+    green for the best values, red for the worst, yellow in between."""
+    s_num = pd.to_numeric(s, errors="coerce")
+    vmin, vmax = s_num.min(), s_num.max()
+    styles = []
+    for v in s_num:
+        if pd.isna(v) or vmax == vmin:
+            styles.append("")
+            continue
+        t = (v - vmin) / (vmax - vmin)
+        if not higher_is_better:
+            t = 1 - t
+        styles.append(_rag_color(t))
+    return styles
+
+
+def style_rag(df, higher_is_better=None, lower_is_better=None, fmt=None):
+    """Apply red/yellow/green background shading to numeric columns of a
+    DataFrame for display with st.dataframe().
+    - higher_is_better: columns where the highest value in view should be green
+      (e.g. Handover Rate %, Revenue Collected)
+    - lower_is_better: columns where the lowest value in view should be green
+      (e.g. Lost/Cancelled Rate %, Avg Aging months)
+    - fmt: optional dict of column -> format string, e.g. {"Handover Rate %": "{:.1f}"}
+    Coloring is relative to the rows currently shown, so it highlights the best/
+    worst performers in view rather than using a fixed external scale."""
+    higher_is_better = higher_is_better or []
+    lower_is_better = lower_is_better or []
+    styler = df.style
+    for col in higher_is_better:
+        if col in df.columns:
+            styler = styler.apply(lambda s: _rag_column(s, True), subset=[col])
+    for col in lower_is_better:
+        if col in df.columns:
+            styler = styler.apply(lambda s: _rag_column(s, False), subset=[col])
+    if fmt:
+        cols_present = {k: v for k, v in fmt.items() if k in df.columns}
+        if cols_present:
+            styler = styler.format(cols_present)
+    return styler
+
+
 def rows_to_df(rows, empty_caption="No data available for the current filter selection."):
+
     """Safe replacement for `pd.DataFrame(rows)` when `rows` was built from a
     groupby loop. If the filtered data produced zero groups, `rows` is an
     empty list and pd.DataFrame(rows) returns a DataFrame with NO columns at
@@ -370,7 +433,8 @@ with tab0:
     with col_b:
         st.markdown("**Final Project Status — full breakdown**")
         snap_status = counts_table(df_raw["Final Project status"], "Status", "Bathrooms")
-        st.dataframe(snap_status, hide_index=True, use_container_width=True)
+        st.dataframe(style_rag(snap_status, higher_is_better=["Bathrooms"]),
+                     hide_index=True, use_container_width=True)
 
     st.markdown("---")
     st.markdown("**Known data quality fixes applied during cleaning**")
@@ -564,15 +628,18 @@ with tab2:
     c1, c2, c3 = st.columns(3)
     with c1:
         st.caption("Sales Booking Stage")
-        st.dataframe(counts_table(df["Sales Booking Stage"], "Stage", "Count"),
+        st.dataframe(style_rag(counts_table(df["Sales Booking Stage"], "Stage", "Count"),
+                                higher_is_better=["Count"]),
                      hide_index=True, use_container_width=True)
     with c2:
         st.caption("Design Stage Status")
-        st.dataframe(counts_table(df["Design Stage Status"], "Status", "Count"),
+        st.dataframe(style_rag(counts_table(df["Design Stage Status"], "Status", "Count"),
+                                higher_is_better=["Count"]),
                      hide_index=True, use_container_width=True)
     with c3:
         st.caption("Execution Stage Status")
-        st.dataframe(counts_table(df["Execution Stage Status"], "Status", "Count"),
+        st.dataframe(style_rag(counts_table(df["Execution Stage Status"], "Status", "Count"),
+                                higher_is_better=["Count"]),
                      hide_index=True, use_container_width=True)
 
 # ===========================================================================
@@ -811,7 +878,17 @@ with tab5:
         st.plotly_chart(style_fig(fig, showlegend=False,
                                    title="Quotation Value by Sales Rep (label = bathrooms booked)"),
                          use_container_width=True)
-        st.dataframe(sales_df, hide_index=True, use_container_width=True)
+        st.dataframe(
+            style_rag(
+                sales_df,
+                higher_is_better=["Bathrooms Booked", "Unique Customers",
+                                   "Quotation Value (Cr)", "Revenue Collected (Cr)", "Handover Rate %"],
+                lower_is_better=["Lost/Cancelled Rate %"],
+                fmt={"Quotation Value (Cr)": "{:.2f}", "Revenue Collected (Cr)": "{:.2f}",
+                     "Handover Rate %": "{:.1f}", "Lost/Cancelled Rate %": "{:.1f}"},
+            ),
+            hide_index=True, use_container_width=True,
+        )
 
     st.markdown("---")
     col_a, col_b = st.columns(2)
@@ -830,7 +907,15 @@ with tab5:
             fig.update_traces(marker_color=COLOR_SEQ[2])
             st.plotly_chart(style_fig(fig, showlegend=False, title="Bathrooms Handled by Designer (Top 15)"),
                              use_container_width=True)
-            st.dataframe(designer_df, hide_index=True, use_container_width=True)
+            st.dataframe(
+                style_rag(
+                    designer_df,
+                    higher_is_better=["Bathrooms"],
+                    lower_is_better=["Avg Design Aging (months)"],
+                    fmt={"Avg Design Aging (months)": "{:.1f}"},
+                ),
+                hide_index=True, use_container_width=True,
+            )
 
     pm_df = None
     with col_b:
@@ -846,7 +931,14 @@ with tab5:
             fig.update_traces(marker_color=COLOR_SEQ[3])
             st.plotly_chart(style_fig(fig, showlegend=False, title="Handover Rate by PM (Top 15 by volume)"),
                              use_container_width=True)
-            st.dataframe(pm_df, hide_index=True, use_container_width=True)
+            st.dataframe(
+                style_rag(
+                    pm_df,
+                    higher_is_better=["Bathrooms", "Handover Rate %"],
+                    fmt={"Handover Rate %": "{:.1f}"},
+                ),
+                hide_index=True, use_container_width=True,
+            )
 
     st.markdown("---")
     st.markdown("**🚩 Team Performance Issues**")
@@ -921,7 +1013,16 @@ with tab6:
         zone_summary["Collection %"] = zone_summary.apply(
             lambda r: safe_pct(r["Revenue Collected (Cr)"], r["Quotation Value (Cr)"]), axis=1
         )
-        st.dataframe(zone_summary, hide_index=True, use_container_width=True)
+        st.dataframe(
+            style_rag(
+                zone_summary,
+                higher_is_better=["Bathrooms", "Quotation Value (Cr)",
+                                   "Revenue Collected (Cr)", "Collection %"],
+                fmt={"Quotation Value (Cr)": "{:.2f}", "Revenue Collected (Cr)": "{:.2f}",
+                     "Collection %": "{:.1f}"},
+            ),
+            hide_index=True, use_container_width=True,
+        )
 
         st.markdown("**🚩 Geographic Issues**")
         geo_issues = []
