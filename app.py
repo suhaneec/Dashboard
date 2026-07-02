@@ -122,8 +122,13 @@ def style_fig(fig, height=420, showlegend=None, title=None):
 def month_labels(period_strings):
     """Converts 'YYYY-MM' period strings (e.g. '2025-10') into readable
     month names for axis labels (e.g. 'Oct 2025'), so charts show the actual
-    month name instead of a raw year-month code."""
-    return pd.to_datetime(period_strings, format="%Y-%m").strftime("%b %Y")
+    month name instead of a raw year-month code.
+    Wrapped in pd.DatetimeIndex (rather than calling .strftime directly on
+    the pd.to_datetime result) because a plain Series has no .strftime
+    method — only its .dt accessor does — while DatetimeIndex exposes
+    .strftime directly, so this works whether the input is a Series, list,
+    or array."""
+    return pd.DatetimeIndex(pd.to_datetime(period_strings, format="%Y-%m")).strftime("%b %Y")
 
 
 def kpi_card(label, value, sub=None, color=ACCENT):
