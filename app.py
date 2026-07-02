@@ -494,6 +494,13 @@ with tab1:
             fig = px.bar(monthly, x="Month", y="Bathrooms Booked",
                          color_discrete_sequence=[ACCENT], text="Bathrooms Booked")
             fig.update_traces(textposition="outside", marker_color=ACCENT)
+            # Force x-axis to stay categorical (text) rather than letting Plotly
+            # auto-detect "2025-10" style strings as dates. With only one month
+            # in view (e.g. after filtering to a single month), a date-typed axis
+            # auto-ranges to a near-zero span and prints garbled sub-second ticks
+            # like "23:59:59.9996" — this keeps the axis showing clean month labels
+            # regardless of how many months are in the filtered view.
+            fig.update_xaxes(type="category")
             st.plotly_chart(style_fig(fig, showlegend=False, title="Bathrooms Booked per Month"),
                              use_container_width=True)
 
@@ -670,6 +677,9 @@ with tab3:
     else:
         fig = px.line(trend, x="Month", y="Revenue", markers=True, color_discrete_sequence=[ACCENT])
         fig.update_traces(line=dict(width=3), marker=dict(size=9, color="#E63946"))
+        # Same fix as the Bookings Trend chart: keep the x-axis categorical so a
+        # single-month filter doesn't trigger Plotly's date-autorange bug.
+        fig.update_xaxes(type="category")
         st.plotly_chart(style_fig(fig, title="Revenue Collected, by Booking-Month Cohort"),
                          use_container_width=True)
 
