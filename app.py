@@ -80,21 +80,50 @@ KPI_COLORS = ["#2E86AB", "#33A02C", "#F26419", "#8E44AD", "#118AB2", "#E63946", 
 
 
 def style_fig(fig, height=420, showlegend=None, title=None):
+    """Applies a clean, boxed chart style: bigger fonts throughout (axis
+    titles, tick labels, legend, and the chart title itself so the takeaway
+    is readable at a glance), a full border around the plot area, and light
+    gridlines so values can be read precisely against the axes."""
     fig.update_layout(
-        font=dict(size=15, family="Arial"),
-        title_font_size=19,
-        legend=dict(font=dict(size=13)),
+        font=dict(size=16, family="Arial"),
+        title_font=dict(size=22, family="Arial", color="#1a1a1a"),
+        title_x=0.01,
+        legend=dict(font=dict(size=14)),
         height=height,
-        margin=dict(t=50, b=40, l=40, r=20),
-        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(t=60, b=50, l=55, r=25),
+        plot_bgcolor="white",
+        paper_bgcolor="rgba(0,0,0,0)",
     )
     if title is not None:
         fig.update_layout(title=title)
     if showlegend is not None:
         fig.update_layout(showlegend=showlegend)
-    fig.update_xaxes(title_font=dict(size=15), tickfont=dict(size=13))
-    fig.update_yaxes(title_font=dict(size=15), tickfont=dict(size=13))
+    # Boxed axes: draw all four borders around the plot area, with matching
+    # gridlines and a visible zero-line, so the chart reads as a clean,
+    # self-contained panel rather than floating bars/lines with no frame.
+    fig.update_xaxes(
+        title_font=dict(size=17, family="Arial"),
+        tickfont=dict(size=15),
+        showline=True, linewidth=1.5, linecolor="#333333", mirror=True,
+        showgrid=True, gridcolor="#EAEAEA", gridwidth=1,
+        ticks="outside", tickcolor="#333333",
+    )
+    fig.update_yaxes(
+        title_font=dict(size=17, family="Arial"),
+        tickfont=dict(size=15),
+        showline=True, linewidth=1.5, linecolor="#333333", mirror=True,
+        showgrid=True, gridcolor="#EAEAEA", gridwidth=1,
+        ticks="outside", tickcolor="#333333",
+        zeroline=True, zerolinecolor="#CCCCCC", zerolinewidth=1,
+    )
     return fig
+
+
+def month_labels(period_strings):
+    """Converts 'YYYY-MM' period strings (e.g. '2025-10') into readable
+    month names for axis labels (e.g. 'Oct 2025'), so charts show the actual
+    month name instead of a raw year-month code."""
+    return pd.to_datetime(period_strings, format="%Y-%m").strftime("%b %Y")
 
 
 def kpi_card(label, value, sub=None, color=ACCENT):
@@ -491,16 +520,21 @@ with tab1:
         if monthly.empty:
             st.caption("No booking-month data in current filter selection.")
         else:
+            # Show real month names (e.g. "Oct 2025") on the axis instead of
+            # the raw "2025-10" period code.
+            monthly["Month"] = month_labels(monthly["Month"])
             fig = px.bar(monthly, x="Month", y="Bathrooms Booked",
                          color_discrete_sequence=[ACCENT], text="Bathrooms Booked")
-            fig.update_traces(textposition="outside", marker_color=ACCENT)
+            fig.update_traces(textposition="outside", marker_color=ACCENT,
+                               textfont=dict(size=15))
             # Force x-axis to stay categorical (text) rather than letting Plotly
             # auto-detect "2025-10" style strings as dates. With only one month
             # in view (e.g. after filtering to a single month), a date-typed axis
             # auto-ranges to a near-zero span and prints garbled sub-second ticks
             # like "23:59:59.9996" — this keeps the axis showing clean month labels
             # regardless of how many months are in the filtered view.
-            fig.update_xaxes(type="category")
+            fig.update_xaxes(type="category", title="Month")
+            fig.update_yaxes(title="Bathrooms Booked")
             st.plotly_chart(style_fig(fig, showlegend=False, title="Bathrooms Booked per Month"),
                              use_container_width=True)
 
@@ -512,7 +546,7 @@ with tab1:
         else:
             fig = px.bar(status_counts, x="Count", y="Status", orientation="h", color="Status",
                          color_discrete_sequence=COLOR_SEQ, text="Count")
-            fig.update_traces(textposition="outside")
+            fig.update_traces(textposition="outside", textfont=dict(size=15))
             st.plotly_chart(style_fig(fig, showlegend=False, title="Where Every Bathroom Stands Today"),
                              use_container_width=True)
 
@@ -565,6 +599,7 @@ with tab2:
         marker_color=[COLOR_SEQ[0], COLOR_SEQ[1], COLOR_SEQ[2], COLOR_SEQ[3]],
         textinfo="value+percent previous",
         texttemplate="%{value:,} (%{percentPrevious})",
+        textfont=dict(size=16),
     )
     st.plotly_chart(style_fig(fig, height=380, showlegend=False, title="Booking-to-Handover Funnel"),
                      use_container_width=True)
@@ -589,7 +624,7 @@ with tab2:
         if len(lost_counts):
             fig = px.pie(lost_counts, names="Reason Stage", values="Count", hole=0.4,
                          color_discrete_sequence=COLOR_SEQ)
-            fig.update_traces(textinfo="label+percent", textfont_size=14)
+            fig.update_traces(textinfo="label+percent", textfont_size=15)
             st.plotly_chart(style_fig(fig, title="Where Deals Are Lost"), use_container_width=True)
         else:
             st.caption("No lost/cancelled bathrooms in current filter selection.")
@@ -600,7 +635,7 @@ with tab2:
         if len(holds):
             fig = px.bar(holds, x="Count", y="Reason", orientation="h",
                          color_discrete_sequence=[ACCENT], text="Count")
-            fig.update_traces(textposition="outside", marker_color=ACCENT)
+            fig.update_traces(textposition="outside", marker_color=ACCENT, textfont=dict(size=15))
             st.plotly_chart(style_fig(fig, showlegend=False, title="Why Bathrooms Get Stuck On Hold"),
                              use_container_width=True)
         else:
@@ -675,6 +710,9 @@ with tab3:
     if trend.empty:
         st.caption("No revenue-by-month data in current filter selection.")
     else:
+        # Show real month names (e.g. "Oct 2025") on the axis instead of the
+        # raw "2025-10" period code.
+        trend["Month"] = month_labels(trend["Month"])
         fig = px.line(trend, x="Month", y="Revenue", markers=True, color_discrete_sequence=[ACCENT])
         fig.update_traces(line=dict(width=3), marker=dict(size=9, color="#E63946"))
         # Same fix as the Bookings Trend chart's x-axis, but for the y-axis here:
@@ -684,8 +722,8 @@ with tab3:
         # fractional-rupee precision (e.g. "570.993101M" vs "570.9931025M").
         # Forcing rangemode="tozero" anchors the axis at 0 so a single point
         # gets a sensible 0-to-value range instead of a microscopic auto-zoom.
-        fig.update_xaxes(type="category")
-        fig.update_yaxes(rangemode="tozero")
+        fig.update_xaxes(type="category", title="Month")
+        fig.update_yaxes(rangemode="tozero", title="Revenue Collected (₹)")
         st.plotly_chart(style_fig(fig, title="Revenue Collected, by Booking-Month Cohort"),
                          use_container_width=True)
 
@@ -701,7 +739,8 @@ with tab3:
         if zone_df is not None:
             zone_df = zone_df.sort_values("Collection %", ascending=False)
             fig = px.bar(zone_df, x="Zone", y="Collection %", color_discrete_sequence=[ACCENT], text="Collection %")
-            fig.update_traces(texttemplate="%{text:.1f}%", textposition="outside", marker_color=ACCENT)
+            fig.update_traces(texttemplate="%{text:.1f}%", textposition="outside", marker_color=ACCENT,
+                               textfont=dict(size=15))
             st.plotly_chart(style_fig(fig, showlegend=False, title="Revenue Collected as % of Quotation, by Zone"),
                              use_container_width=True)
 
@@ -786,7 +825,7 @@ with tab4:
         d = counts_table(df["Design aging (Bracket) From Booking"], "Bracket", "Count")
         if len(d):
             fig = px.pie(d, names="Bracket", values="Count", hole=0.4, color_discrete_sequence=COLOR_SEQ)
-            fig.update_traces(textinfo="label+percent", textfont_size=14)
+            fig.update_traces(textinfo="label+percent", textfont_size=15)
             st.plotly_chart(style_fig(fig, title="Design Stage: On Track vs Delayed"), use_container_width=True)
         else:
             st.caption("No data in current filter selection.")
@@ -795,7 +834,7 @@ with tab4:
         d = counts_table(df["PI aging (Bracket) From Booking"], "Bracket", "Count")
         if len(d):
             fig = px.pie(d, names="Bracket", values="Count", hole=0.4, color_discrete_sequence=COLOR_SEQ)
-            fig.update_traces(textinfo="label+percent", textfont_size=14)
+            fig.update_traces(textinfo="label+percent", textfont_size=15)
             st.plotly_chart(style_fig(fig, title="PI Stage: On Track vs Delayed"), use_container_width=True)
         else:
             st.caption("No data in current filter selection.")
@@ -804,7 +843,7 @@ with tab4:
         d = counts_table(df["Execution aging (Bracket) From Design payment"], "Bracket", "Count")
         if len(d):
             fig = px.pie(d, names="Bracket", values="Count", hole=0.4, color_discrete_sequence=COLOR_SEQ)
-            fig.update_traces(textinfo="label+percent", textfont_size=14)
+            fig.update_traces(textinfo="label+percent", textfont_size=15)
             st.plotly_chart(style_fig(fig, title="Execution Stage: On Track vs Delayed"), use_container_width=True)
         else:
             st.caption("No data in current filter selection.")
@@ -890,7 +929,7 @@ with tab5:
         st.markdown("**Sales Team — Quotation Value Booked**")
         fig = px.bar(sales_df, x="Sales Team", y="Quotation Value (Cr)", text="Bathrooms Booked",
                      color_discrete_sequence=[ACCENT])
-        fig.update_traces(marker_color=ACCENT, textposition="outside")
+        fig.update_traces(marker_color=ACCENT, textposition="outside", textfont=dict(size=15))
         st.plotly_chart(style_fig(fig, showlegend=False,
                                    title="Quotation Value by Sales Rep (label = bathrooms booked)"),
                          use_container_width=True)
@@ -1011,7 +1050,7 @@ with tab6:
         )
         fig.update_layout(mapbox_style="open-street-map", height=560,
                            margin=dict(t=10, b=0, l=0, r=0),
-                           legend=dict(font=dict(size=13)))
+                           legend=dict(font=dict(size=14)))
         st.plotly_chart(fig, use_container_width=True)
 
         st.markdown("**Top 10 Localities by Bathrooms Booked**")
