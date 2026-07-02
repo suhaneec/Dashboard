@@ -148,6 +148,20 @@ def flag_box(issues, ok_msg="No significant issues detected in the current view.
     )
 
 
+def rows_to_df(rows, empty_caption="No data available for the current filter selection."):
+    """Safe replacement for `pd.DataFrame(rows)` when `rows` was built from a
+    groupby loop. If the filtered data produced zero groups, `rows` is an
+    empty list and pd.DataFrame(rows) returns a DataFrame with NO columns at
+    all — so any later `.sort_values("SomeCol")` throws KeyError: 'SomeCol'.
+    This helper renders a caption and returns None so callers can bail out
+    of that section cleanly instead of crashing the whole app."""
+    d = pd.DataFrame(rows)
+    if d.empty:
+        st.caption(empty_caption)
+        return None
+    return d
+
+
 # ---------------------------------------------------------------------------
 # PROBLEM-DETECTION THRESHOLDS
 # These are business assumptions, not derived from the data — tune them to
@@ -168,6 +182,8 @@ TEAM_MIN_GROUP_SIZE = 3              # don't flag outliers in groups smaller tha
 def sd_outliers(perf_df, metric_col, id_col, worse_is_lower, label, unit="%"):
     """Flags rows more than TEAM_OUTLIER_SD standard deviations worse than the
     peer-group mean on `metric_col`. Self-calibrating — no fixed threshold needed."""
+    if perf_df is None or metric_col not in perf_df.columns:
+        return []
     perf_df = perf_df.dropna(subset=[metric_col])
     if len(perf_df) < TEAM_MIN_GROUP_SIZE:
         return []
@@ -217,10 +233,13 @@ def customer_level_value(frame, value_col):
         if len(s) == 0:
             return 0.0
         return s.iloc[0] if s.nunique() == 1 else s.sum()
+    if frame.empty:
+        return pd.Series(dtype="float64")
     return frame.groupby("Project Parent Code")[value_col].apply(_agg)
 
 def smart_total(frame, value_col):
-    return customer_level_value(frame, value_col).sum()
+    vals = customer_level_value(frame, value_col)
+    return vals.sum() if len(vals) else 0.0
 
 # ---------------------------------------------------------------------------
 # APPROX ZONE CENTROIDS (Delhi-NCR) — used for the geography map.
@@ -280,6 +299,17 @@ if statuses:
 
 st.sidebar.markdown("---")
 st.sidebar.caption(f"Showing **{len(df):,}** bathrooms across **{df['Project Parent Code'].nunique():,}** customers")
+
+# ---------------------------------------------------------------------------
+# GLOBAL EMPTY-FILTER GUARD
+# If the sidebar filter combination matches zero rows, every downstream
+# groupby produces an empty result, which crashes tabs with KeyError on
+# columns like "Bathrooms" or "PM" that never got created. Stop here with a
+# friendly message instead of letting each tab fail separately.
+# ---------------------------------------------------------------------------
+if df.empty:
+    st.warning("⚠️ No bathrooms match the selected filters. Please adjust your filter selection in the sidebar.")
+    st.stop()
 
 # ---------------------------------------------------------------------------
 # HEADER
@@ -394,20 +424,26 @@ with tab1:
             df["Booking Month"].dt.to_period("M").astype(str)
         ).size().reset_index(name="Bathrooms Booked")
         monthly.columns = ["Month", "Bathrooms Booked"]
-        fig = px.bar(monthly, x="Month", y="Bathrooms Booked",
-                     color_discrete_sequence=[ACCENT], text="Bathrooms Booked")
-        fig.update_traces(textposition="outside", marker_color=ACCENT)
-        st.plotly_chart(style_fig(fig, showlegend=False, title="Bathrooms Booked per Month"),
-                         use_container_width=True)
+        if monthly.empty:
+            st.caption("No booking-month data in current filter selection.")
+        else:
+            fig = px.bar(monthly, x="Month", y="Bathrooms Booked",
+                         color_discrete_sequence=[ACCENT], text="Bathrooms Booked")
+            fig.update_traces(textposition="outside", marker_color=ACCENT)
+            st.plotly_chart(style_fig(fig, showlegend=False, title="Bathrooms Booked per Month"),
+                             use_container_width=True)
 
     with col_b:
         st.markdown("**Final Project Status Distribution**")
         status_counts = counts_table(df["Final Project status"], "Status", "Count")
-        fig = px.bar(status_counts, x="Count", y="Status", orientation="h", color="Status",
-                     color_discrete_sequence=COLOR_SEQ, text="Count")
-        fig.update_traces(textposition="outside")
-        st.plotly_chart(style_fig(fig, showlegend=False, title="Where Every Bathroom Stands Today"),
-                         use_container_width=True)
+        if status_counts.empty:
+            st.caption("No status data in current filter selection.")
+        else:
+            fig = px.bar(status_counts, x="Count", y="Status", orientation="h", color="Status",
+                         color_discrete_sequence=COLOR_SEQ, text="Count")
+            fig.update_traces(textposition="outside")
+            st.plotly_chart(style_fig(fig, showlegend=False, title="Where Every Bathroom Stands Today"),
+                             use_container_width=True)
 
     st.info(
         "**Data quality note:** 51 of 256 multi-bathroom customers had an identical "
@@ -473,6 +509,7 @@ with tab2:
     st.markdown("---")
     col_a, col_b = st.columns(2)
 
+    lost_counts = pd.DataFrame()
     with col_a:
         st.markdown("**Lost / Cancelled Breakdown**")
         lost = df[df["Final Project status"].isin(
@@ -561,35 +598,43 @@ with tab3:
     rev_by_cust = customer_level_value(df, "Total revenue collected")
     trend = pd.DataFrame({"Month": cust_month, "Revenue": rev_by_cust}).dropna() \
         .groupby("Month")["Revenue"].sum().reset_index()
-    fig = px.line(trend, x="Month", y="Revenue", markers=True, color_discrete_sequence=[ACCENT])
-    fig.update_traces(line=dict(width=3), marker=dict(size=9, color="#E63946"))
-    st.plotly_chart(style_fig(fig, title="Revenue Collected, by Booking-Month Cohort"),
-                     use_container_width=True)
+    if trend.empty:
+        st.caption("No revenue-by-month data in current filter selection.")
+    else:
+        fig = px.line(trend, x="Month", y="Revenue", markers=True, color_discrete_sequence=[ACCENT])
+        fig.update_traces(line=dict(width=3), marker=dict(size=9, color="#E63946"))
+        st.plotly_chart(style_fig(fig, title="Revenue Collected, by Booking-Month Cohort"),
+                         use_container_width=True)
 
     col_a, col_b = st.columns(2)
+    zone_df = None
     with col_a:
         st.markdown("**Collection Efficiency by Zone**")
         rows = []
         for z, g in df.groupby("Zone"):
             q, r = smart_total(g, "Quotation value"), smart_total(g, "Total revenue collected")
             rows.append({"Zone": z, "Collection %": safe_pct(r, q)})
-        zone_df = pd.DataFrame(rows).sort_values("Collection %", ascending=False)
-        fig = px.bar(zone_df, x="Zone", y="Collection %", color_discrete_sequence=[ACCENT], text="Collection %")
-        fig.update_traces(texttemplate="%{text:.1f}%", textposition="outside", marker_color=ACCENT)
-        st.plotly_chart(style_fig(fig, showlegend=False, title="Revenue Collected as % of Quotation, by Zone"),
-                         use_container_width=True)
+        zone_df = rows_to_df(rows, "No zone data in current filter selection.")
+        if zone_df is not None:
+            zone_df = zone_df.sort_values("Collection %", ascending=False)
+            fig = px.bar(zone_df, x="Zone", y="Collection %", color_discrete_sequence=[ACCENT], text="Collection %")
+            fig.update_traces(texttemplate="%{text:.1f}%", textposition="outside", marker_color=ACCENT)
+            st.plotly_chart(style_fig(fig, showlegend=False, title="Revenue Collected as % of Quotation, by Zone"),
+                             use_container_width=True)
 
     with col_b:
         st.markdown("**Top 10 Localities by Revenue Collected**")
         rows = []
         for loc, g in df.groupby("Locality"):
             rows.append({"Locality": loc, "Revenue Collected": smart_total(g, "Total revenue collected")})
-        loc_df = pd.DataFrame(rows).sort_values("Revenue Collected", ascending=False).head(10)
-        fig = px.bar(loc_df, x="Revenue Collected", y="Locality", orientation="h",
-                     color_discrete_sequence=[ACCENT])
-        fig.update_traces(marker_color=ACCENT)
-        st.plotly_chart(style_fig(fig, showlegend=False, title="Top 10 Localities by Revenue Collected"),
-                         use_container_width=True)
+        loc_df = rows_to_df(rows, "No locality data in current filter selection.")
+        if loc_df is not None:
+            loc_df = loc_df.sort_values("Revenue Collected", ascending=False).head(10)
+            fig = px.bar(loc_df, x="Revenue Collected", y="Locality", orientation="h",
+                         color_discrete_sequence=[ACCENT])
+            fig.update_traces(marker_color=ACCENT)
+            st.plotly_chart(style_fig(fig, showlegend=False, title="Top 10 Localities by Revenue Collected"),
+                             use_container_width=True)
 
     st.markdown("**Pending Amount to Collect — Distribution**")
     st.markdown(
@@ -606,11 +651,14 @@ with tab3:
         df, "Pending Amount to collect\n (in lacs) without gst"
     ).reset_index()
     pending_series.columns = ["Project Parent Code", "Pending Amount (Lacs)"]
-    fig = px.histogram(pending_series, x="Pending Amount (Lacs)", nbins=30,
-                        color_discrete_sequence=[ACCENT])
-    fig.update_traces(marker_color=ACCENT)
-    st.plotly_chart(style_fig(fig, showlegend=False, title="Customers by Pending Amount Outstanding (Lacs)"),
-                     use_container_width=True)
+    if pending_series.empty:
+        st.caption("No pending-amount data in current filter selection.")
+    else:
+        fig = px.histogram(pending_series, x="Pending Amount (Lacs)", nbins=30,
+                            color_discrete_sequence=[ACCENT])
+        fig.update_traces(marker_color=ACCENT)
+        st.plotly_chart(style_fig(fig, showlegend=False, title="Customers by Pending Amount Outstanding (Lacs)"),
+                         use_container_width=True)
 
     st.markdown("**🚩 Revenue & Collections Issues**")
     rev_issues = []
@@ -621,13 +669,14 @@ with tab3:
             f"total revenue collected — above the {PENDING_TO_REVENUE_FLAG*100:.0f}% watch level."
         )
     portfolio_collection_pct = safe_pct(total_revenue, total_quotation)
-    for _, r in zone_df.iterrows():
-        gap = portfolio_collection_pct - r["Collection %"]
-        if gap > ZONE_COLLECTION_GAP_FLAG:
-            rev_issues.append(
-                f"<b>{r['Zone']}</b> collection efficiency is {r['Collection %']:.1f}%, "
-                f"{gap:.0f}pp below the portfolio average ({portfolio_collection_pct:.1f}%)."
-            )
+    if zone_df is not None:
+        for _, r in zone_df.iterrows():
+            gap = portfolio_collection_pct - r["Collection %"]
+            if gap > ZONE_COLLECTION_GAP_FLAG:
+                rev_issues.append(
+                    f"<b>{r['Zone']}</b> collection efficiency is {r['Collection %']:.1f}%, "
+                    f"{gap:.0f}pp below the portfolio average ({portfolio_collection_pct:.1f}%)."
+                )
     flag_box(rev_issues)
 
 # ===========================================================================
@@ -751,19 +800,22 @@ with tab5:
             "Quotation Value (Cr)": round(quotation/1e7, 2), "Revenue Collected (Cr)": round(revenue/1e7, 2),
             "Handover Rate %": round(handover_rate, 1), "Lost/Cancelled Rate %": round(lost_rate, 1)
         })
-    sales_df = pd.DataFrame(rows).sort_values("Bathrooms Booked", ascending=False)
+    sales_df = rows_to_df(rows, "No sales team data in current filter selection.")
+    if sales_df is not None:
+        sales_df = sales_df.sort_values("Bathrooms Booked", ascending=False)
 
-    st.markdown("**Sales Team — Quotation Value Booked**")
-    fig = px.bar(sales_df, x="Sales Team", y="Quotation Value (Cr)", text="Bathrooms Booked",
-                 color_discrete_sequence=[ACCENT])
-    fig.update_traces(marker_color=ACCENT, textposition="outside")
-    st.plotly_chart(style_fig(fig, showlegend=False,
-                               title="Quotation Value by Sales Rep (label = bathrooms booked)"),
-                     use_container_width=True)
-    st.dataframe(sales_df, hide_index=True, use_container_width=True)
+        st.markdown("**Sales Team — Quotation Value Booked**")
+        fig = px.bar(sales_df, x="Sales Team", y="Quotation Value (Cr)", text="Bathrooms Booked",
+                     color_discrete_sequence=[ACCENT])
+        fig.update_traces(marker_color=ACCENT, textposition="outside")
+        st.plotly_chart(style_fig(fig, showlegend=False,
+                                   title="Quotation Value by Sales Rep (label = bathrooms booked)"),
+                         use_container_width=True)
+        st.dataframe(sales_df, hide_index=True, use_container_width=True)
 
     st.markdown("---")
     col_a, col_b = st.columns(2)
+    designer_df = None
     with col_a:
         st.markdown("**Designer — Bathrooms Handled**")
         rows = []
@@ -771,25 +823,30 @@ with tab5:
             avg_aging = g["Months to Design completed from booking"].mean()
             rows.append({"Designer": d, "Bathrooms": len(g),
                          "Avg Design Aging (months)": round(avg_aging, 1) if pd.notna(avg_aging) else None})
-        designer_df = pd.DataFrame(rows).sort_values("Bathrooms", ascending=False).head(15)
-        fig = px.bar(designer_df, x="Designer", y="Bathrooms", color_discrete_sequence=[COLOR_SEQ[2]])
-        fig.update_traces(marker_color=COLOR_SEQ[2])
-        st.plotly_chart(style_fig(fig, showlegend=False, title="Bathrooms Handled by Designer (Top 15)"),
-                         use_container_width=True)
-        st.dataframe(designer_df, hide_index=True, use_container_width=True)
+        designer_df = rows_to_df(rows, "No designer data in current filter selection.")
+        if designer_df is not None:
+            designer_df = designer_df.sort_values("Bathrooms", ascending=False).head(15)
+            fig = px.bar(designer_df, x="Designer", y="Bathrooms", color_discrete_sequence=[COLOR_SEQ[2]])
+            fig.update_traces(marker_color=COLOR_SEQ[2])
+            st.plotly_chart(style_fig(fig, showlegend=False, title="Bathrooms Handled by Designer (Top 15)"),
+                             use_container_width=True)
+            st.dataframe(designer_df, hide_index=True, use_container_width=True)
 
+    pm_df = None
     with col_b:
         st.markdown("**PM — Handover Rate (Execution)**")
         rows = []
         for pm, g in df.groupby("PM"):
             hr = safe_pct((g["Final Project status"] == "Handover Completed").sum(), len(g))
             rows.append({"PM": pm, "Bathrooms": len(g), "Handover Rate %": round(hr, 1)})
-        pm_df = pd.DataFrame(rows).sort_values("Bathrooms", ascending=False).head(15)
-        fig = px.bar(pm_df, x="PM", y="Handover Rate %", color_discrete_sequence=[COLOR_SEQ[3]])
-        fig.update_traces(marker_color=COLOR_SEQ[3])
-        st.plotly_chart(style_fig(fig, showlegend=False, title="Handover Rate by PM (Top 15 by volume)"),
-                         use_container_width=True)
-        st.dataframe(pm_df, hide_index=True, use_container_width=True)
+        pm_df = rows_to_df(rows, "No PM data in current filter selection.")
+        if pm_df is not None:
+            pm_df = pm_df.sort_values("Bathrooms", ascending=False).head(15)
+            fig = px.bar(pm_df, x="PM", y="Handover Rate %", color_discrete_sequence=[COLOR_SEQ[3]])
+            fig.update_traces(marker_color=COLOR_SEQ[3])
+            st.plotly_chart(style_fig(fig, showlegend=False, title="Handover Rate by PM (Top 15 by volume)"),
+                             use_container_width=True)
+            st.dataframe(pm_df, hide_index=True, use_container_width=True)
 
     st.markdown("---")
     st.markdown("**🚩 Team Performance Issues**")
@@ -833,54 +890,55 @@ with tab6:
             "Revenue Collected (Cr)": round(revenue/1e7, 2),
             "lat": lat, "lon": lon,
         })
-    geo_df = pd.DataFrame(rows)
+    geo_df = rows_to_df(rows, "No geographic data in current filter selection.")
 
-    fig = px.scatter_mapbox(
-        geo_df, lat="lat", lon="lon", size="Bathrooms", color="Zone",
-        hover_name="Locality",
-        hover_data={"Bathrooms": True, "Quotation Value (Cr)": True,
-                    "Revenue Collected (Cr)": True, "lat": False, "lon": False},
-        color_discrete_sequence=COLOR_SEQ, size_max=38, zoom=8.6,
-        center={"lat": 28.58, "lon": 77.22},
-    )
-    fig.update_layout(mapbox_style="open-street-map", height=560,
-                       margin=dict(t=10, b=0, l=0, r=0),
-                       legend=dict(font=dict(size=13)))
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.markdown("**Top 10 Localities by Bathrooms Booked**")
-    top_loc = geo_df.sort_values("Bathrooms", ascending=False).head(10)
-    fig = px.bar(top_loc, x="Bathrooms", y="Locality", orientation="h", color="Zone",
-                 color_discrete_sequence=COLOR_SEQ)
-    st.plotly_chart(style_fig(fig, title="Top 10 Localities by Bathrooms Booked"), use_container_width=True)
-
-    st.markdown("**Zone-wise Summary**")
-    zone_summary = geo_df.groupby("Zone").agg(
-        Bathrooms=("Bathrooms", "sum"),
-        **{"Quotation Value (Cr)": ("Quotation Value (Cr)", "sum")},
-        **{"Revenue Collected (Cr)": ("Revenue Collected (Cr)", "sum")},
-    ).reset_index().sort_values("Bathrooms", ascending=False)
-    zone_summary["Collection %"] = zone_summary.apply(
-        lambda r: safe_pct(r["Revenue Collected (Cr)"], r["Quotation Value (Cr)"]), axis=1
-    )
-    st.dataframe(zone_summary, hide_index=True, use_container_width=True)
-
-    st.markdown("**🚩 Geographic Issues**")
-    geo_issues = []
-    portfolio_collection = safe_pct(zone_summary["Revenue Collected (Cr)"].sum(),
-                                     zone_summary["Quotation Value (Cr)"].sum())
-    for _, r in zone_summary.iterrows():
-        gap = portfolio_collection - r["Collection %"]
-        if gap > ZONE_COLLECTION_GAP_FLAG:
-            geo_issues.append(
-                f"<b>{r['Zone']}</b> is trailing on collections: {r['Collection %']:.1f}% vs. "
-                f"portfolio average {portfolio_collection:.1f}% ({gap:.0f}pp gap)."
-            )
-    low_volume = zone_summary[zone_summary["Bathrooms"] < zone_summary["Bathrooms"].mean() * 0.25]
-    if len(low_volume) and len(zone_summary) > 3:
-        names = ", ".join(f"<b>{z}</b>" for z in low_volume["Zone"])
-        geo_issues.append(
-            f"Low-volume zones with limited data (under 25% of the average zone's bookings): {names} — "
-            "treat their metrics as directional only, not statistically reliable yet."
+    if geo_df is not None:
+        fig = px.scatter_mapbox(
+            geo_df, lat="lat", lon="lon", size="Bathrooms", color="Zone",
+            hover_name="Locality",
+            hover_data={"Bathrooms": True, "Quotation Value (Cr)": True,
+                        "Revenue Collected (Cr)": True, "lat": False, "lon": False},
+            color_discrete_sequence=COLOR_SEQ, size_max=38, zoom=8.6,
+            center={"lat": 28.58, "lon": 77.22},
         )
-    flag_box(geo_issues)
+        fig.update_layout(mapbox_style="open-street-map", height=560,
+                           margin=dict(t=10, b=0, l=0, r=0),
+                           legend=dict(font=dict(size=13)))
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("**Top 10 Localities by Bathrooms Booked**")
+        top_loc = geo_df.sort_values("Bathrooms", ascending=False).head(10)
+        fig = px.bar(top_loc, x="Bathrooms", y="Locality", orientation="h", color="Zone",
+                     color_discrete_sequence=COLOR_SEQ)
+        st.plotly_chart(style_fig(fig, title="Top 10 Localities by Bathrooms Booked"), use_container_width=True)
+
+        st.markdown("**Zone-wise Summary**")
+        zone_summary = geo_df.groupby("Zone").agg(
+            Bathrooms=("Bathrooms", "sum"),
+            **{"Quotation Value (Cr)": ("Quotation Value (Cr)", "sum")},
+            **{"Revenue Collected (Cr)": ("Revenue Collected (Cr)", "sum")},
+        ).reset_index().sort_values("Bathrooms", ascending=False)
+        zone_summary["Collection %"] = zone_summary.apply(
+            lambda r: safe_pct(r["Revenue Collected (Cr)"], r["Quotation Value (Cr)"]), axis=1
+        )
+        st.dataframe(zone_summary, hide_index=True, use_container_width=True)
+
+        st.markdown("**🚩 Geographic Issues**")
+        geo_issues = []
+        portfolio_collection = safe_pct(zone_summary["Revenue Collected (Cr)"].sum(),
+                                         zone_summary["Quotation Value (Cr)"].sum())
+        for _, r in zone_summary.iterrows():
+            gap = portfolio_collection - r["Collection %"]
+            if gap > ZONE_COLLECTION_GAP_FLAG:
+                geo_issues.append(
+                    f"<b>{r['Zone']}</b> is trailing on collections: {r['Collection %']:.1f}% vs. "
+                    f"portfolio average {portfolio_collection:.1f}% ({gap:.0f}pp gap)."
+                )
+        low_volume = zone_summary[zone_summary["Bathrooms"] < zone_summary["Bathrooms"].mean() * 0.25]
+        if len(low_volume) and len(zone_summary) > 3:
+            names = ", ".join(f"<b>{z}</b>" for z in low_volume["Zone"])
+            geo_issues.append(
+                f"Low-volume zones with limited data (under 25% of the average zone's bookings): {names} — "
+                "treat their metrics as directional only, not statistically reliable yet."
+            )
+        flag_box(geo_issues)
