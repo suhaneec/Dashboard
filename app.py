@@ -677,9 +677,15 @@ with tab3:
     else:
         fig = px.line(trend, x="Month", y="Revenue", markers=True, color_discrete_sequence=[ACCENT])
         fig.update_traces(line=dict(width=3), marker=dict(size=9, color="#E63946"))
-        # Same fix as the Bookings Trend chart: keep the x-axis categorical so a
-        # single-month filter doesn't trigger Plotly's date-autorange bug.
+        # Same fix as the Bookings Trend chart's x-axis, but for the y-axis here:
+        # with only one data point in view (e.g. a single-month filter), Plotly
+        # has no spread to base an axis range on and auto-zooms into a sliver
+        # around that one value — printing near-identical tick labels down to
+        # fractional-rupee precision (e.g. "570.993101M" vs "570.9931025M").
+        # Forcing rangemode="tozero" anchors the axis at 0 so a single point
+        # gets a sensible 0-to-value range instead of a microscopic auto-zoom.
         fig.update_xaxes(type="category")
+        fig.update_yaxes(rangemode="tozero")
         st.plotly_chart(style_fig(fig, title="Revenue Collected, by Booking-Month Cohort"),
                          use_container_width=True)
 
